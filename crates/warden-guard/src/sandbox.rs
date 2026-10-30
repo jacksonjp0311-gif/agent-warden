@@ -10,7 +10,9 @@
 //! 4. seccomp-bpf: dangerous syscalls (ptrace, mount, bpf, kexec, module
 //!    loading, namespace creation, ...) fail with EPERM.
 
+#[cfg(unix)]
 use std::io;
+#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -39,6 +41,7 @@ pub enum Rlimit {
     Core,
 }
 
+#[cfg(unix)]
 impl Rlimit {
     #[allow(clippy::useless_conversion)]
     fn raw(self) -> libc::__rlimit_resource_t {
@@ -55,13 +58,16 @@ impl Rlimit {
 
 /// The literal directory prefix of a glob (`/ws/src/**/*.rs` -> `/ws/src`).
 pub fn glob_root(pattern: &str) -> PathBuf {
-    let mut out = PathBuf::from("/");
-    for comp in Path::new(pattern).components().skip(1) {
+    let mut out = PathBuf::new();
+    for comp in Path::new(pattern).components() {
         let s = comp.as_os_str().to_string_lossy();
         if s.contains(['*', '?', '[', '{']) {
             break;
         }
         out.push(comp);
+    }
+    if out.as_os_str().is_empty() {
+        out.push(std::path::MAIN_SEPARATOR_STR);
     }
     out
 }
@@ -148,6 +154,17 @@ pub fn describe(spec: &SandboxSpec) -> Vec<String> {
     let mut v = vec![];
     let ll_compiled = cfg!(all(feature = "landlock", target_os = "linux"));
     let sc_compiled = cfg!(all(feature = "seccomp", target_os = "linux"));
+    if !cfg!(target_os = "linux") {
+        v.push(format!(
+            "kernel sandbox: NOT available on {} (Landlock/seccomp are Linux-only); \
+             gateway, egress proxy, audit log and kill switch still enforced",
+            std::env::consts::OS
+        ));
+        if cfg!(windows) {
+            v.push("kill switch: Windows Job Object (whole process tree)".into());
+        }
+        return v;
+    }
     match (spec.landlock, ll_compiled, landlock_abi()) {
         (false, _, _) => v.push("landlock: disabled by policy".into()),
         (true, false, _) => v.push("landlock: NOT compiled in (feature `landlock` off)".into()),
@@ -314,6 +331,23 @@ fn build_seccomp(spec: &SandboxSpec) -> io::Result<seccompiler::BpfProgram> {
 
 /// Install the sandbox into `cmd` (applied in the child before `exec`).
 /// Returns notes about layers that could not be prepared.
+#[cfg(not(unix))]
+pub fn apply(_cmd: &mut Command, spec: &SandboxSpec) -> Vec<String> {
+    let mut notes = vec![];
+    if spec.landlock || spec.seccomp {
+        notes.push(format!(
+            "no kernel sandbox on {}: the agent is confined only by what it \
+             asks warden to do (gateway + proxy); direct OS access is not blocked",
+            std::env::consts::OS
+        ));
+    }
+    if !spec.rlimits.is_empty() {
+        notes.push("rlimits are not supported on this platform; skipped".into());
+    }
+    notes
+}
+
+#[cfg(unix)]
 pub fn apply(cmd: &mut Command, spec: &SandboxSpec) -> Vec<String> {
     #[allow(unused_mut)]
     let mut notes = vec![];
@@ -384,12 +418,20 @@ pub fn apply(cmd: &mut Command, spec: &SandboxSpec) -> Vec<String> {
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
     #[test]
     fn glob_roots() {
         assert_eq!(glob_root("/ws/src/**/*.rs"), PathBuf::from("/ws/src"));
         assert_eq!(glob_root("/ws/**"), PathBuf::from("/ws"));
         assert_eq!(glob_root("/etc/hosts"), PathBuf::from("/etc/hosts"));
         assert_eq!(glob_root("/*"), PathBuf::from("/"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn glob_roots_windows() {
+        assert_eq!(glob_root("C:/ws/src/**/*.rs"), PathBuf::from(r"C:\ws\src"));
+        assert_eq!(glob_root("C:/*"), PathBuf::from(r"C:\"));
     }
 
     #[cfg(all(feature = "landlock", target_os = "linux"))]

@@ -66,7 +66,7 @@ enum Cmd {
     Gateway {
         #[command(flatten)]
         common: Common,
-        /// Listen on this Unix socket instead of stdio.
+        /// Listen on this Unix socket instead of stdio (Unix only).
         #[arg(long)]
         socket: Option<PathBuf>,
         /// Kill this process group when a tripwire fires.
@@ -159,20 +159,31 @@ fn real_main(cli: Cli) -> Result<i32> {
             }
             Some(sock) => {
                 let s = launch::Session::open(&common.opts())?;
-                if let Some(p) = kill_pgid {
-                    s.sup.set_kill_target(warden_guard::supervisor::KillTarget {
-                        pgid: p,
-                        tree_root: p,
-                    });
+                #[cfg(not(unix))]
+                {
+                    let _ = (s, sock);
+                    anyhow::bail!(
+                        "--socket needs Unix sockets; on this platform use stdio (omit --socket) or `warden run`"
+                    );
                 }
+                #[cfg(unix)]
+                if let Some(p) = kill_pgid {
+                    s.sup
+                        .set_kill_target(warden_guard::supervisor::KillTarget::group(p, p));
+                }
+                #[cfg(unix)]
                 s.sup.log(
                     serde_json::json!({"kind": "session_start", "mode": "gateway-socket",
                     "policy_sha256": s.policy_sha256, "socket": sock}),
                 );
-                let gw = std::sync::Arc::new(warden_guard::gateway::Gateway::new(s.sup.clone()));
-                gw.serve_unix(&sock)?;
-                eprintln!("warden: gateway listening on {}", sock.display());
-                Ok(wait_halt(&s.sup))
+                #[cfg(unix)]
+                {
+                    let gw =
+                        std::sync::Arc::new(warden_guard::gateway::Gateway::new(s.sup.clone()));
+                    gw.serve_unix(&sock)?;
+                    eprintln!("warden: gateway listening on {}", sock.display());
+                    Ok(wait_halt(&s.sup))
+                }
             }
         },
         Cmd::Proxy { common, listen } => {
@@ -227,12 +238,16 @@ fn real_main(cli: Cli) -> Result<i32> {
         }
         Cmd::Keygen { out } => {
             use std::io::Write;
-            use std::os::unix::fs::OpenOptionsExt;
             let (sk, pk) = warden_audit::generate_key();
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
+            let mut oo = std::fs::OpenOptions::new();
+            oo.write(true).create_new(true);
+            // Windows: the file inherits the per-user ACL of its directory.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                oo.mode(0o600);
+            }
+            let mut f = oo
                 .open(&out)
                 .with_context(|| format!("create {}", out.display()))?;
             writeln!(f, "{sk}")?;
@@ -306,19 +321,43 @@ fn kill(state_dir: &Path, reason: &str) -> Result<i32> {
         bail!("bad state file");
     }
     std::fs::write(state_dir.join("KILL"), reason)?;
-    unsafe { libc::kill(wpid, libc::SIGUSR1) };
+    // Unix: also poke warden with SIGUSR1. Windows: warden polls the KILL file.
+    #[cfg(unix)]
+    unsafe {
+        libc::kill(wpid, libc::SIGUSR1)
+    };
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if !sf.exists() || unsafe { libc::kill(apgid, 0) } != 0 {
+        if !sf.exists() || !pid_alive(apgid) {
             println!("killed: agent process group {apgid} terminated by warden {wpid}");
             return Ok(0);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
     // Warden did not respond (hung or itself compromised): hard kill.
-    eprintln!("warden did not confirm; sending SIGKILL to process group {apgid}");
+    eprintln!("warden did not confirm; force-killing agent {apgid} and its tree");
     if apgid > 1 {
-        unsafe { libc::kill(-apgid, libc::SIGKILL) };
+        #[cfg(unix)]
+        unsafe {
+            libc::kill(-apgid, libc::SIGKILL)
+        };
+        #[cfg(not(unix))]
+        warden_guard::kill::taskkill_tree(apgid as u32);
     }
     Ok(1)
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn pid_alive(pid: i32) -> bool {
+    // tasklist prints the image name only if the pid exists.
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
+        .unwrap_or(false)
 }

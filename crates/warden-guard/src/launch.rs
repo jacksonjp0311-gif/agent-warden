@@ -5,8 +5,12 @@ use crate::sandbox::{self, SandboxSpec};
 use crate::supervisor::{Counters, HaltInfo, KillTarget, Supervisor};
 use serde_json::json;
 use sha2::{Digest, Sha256};
+#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -47,12 +51,14 @@ pub struct SessionOptions {
 
 /// Default state directory, deliberately outside any workspace.
 pub fn default_state_dir() -> PathBuf {
+    #[cfg(windows)]
+    if let Some(x) = std::env::var_os("LOCALAPPDATA").filter(|x| !x.is_empty()) {
+        return PathBuf::from(x).join("agent-warden").join("state");
+    }
     if let Some(x) = std::env::var_os("XDG_STATE_HOME").filter(|x| !x.is_empty()) {
         return PathBuf::from(x).join("agent-warden");
     }
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| "/tmp".into());
+    let home = warden_policy::home_dir().unwrap_or_else(std::env::temp_dir);
     home.join(".local/state/agent-warden")
 }
 
@@ -69,7 +75,7 @@ pub struct Session {
 }
 
 fn canon(p: &Path) -> Result<PathBuf, LaunchError> {
-    p.canonicalize().map_err(io(p.display().to_string()))
+    warden_policy::canonicalize(p).map_err(io(p.display().to_string()))
 }
 
 impl Session {
@@ -77,6 +83,8 @@ impl Session {
         let policy_path = canon(&o.policy_path)?;
         let workspace = canon(&o.workspace)?;
         std::fs::create_dir_all(&o.state_dir).map_err(io(o.state_dir.display().to_string()))?;
+        // On Windows the state dir inherits the per-user ACL of %LOCALAPPDATA%.
+        #[cfg(unix)]
         std::fs::set_permissions(&o.state_dir, std::fs::Permissions::from_mode(0o700))
             .map_err(io("state dir permissions"))?;
         let state_dir = canon(&o.state_dir)?;
@@ -112,11 +120,11 @@ impl Session {
             log_path.clone(),
             warden_audit::head_path(&log_path),
         ];
-        if let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) {
+        if let Ok(exe) = std::env::current_exe().and_then(|e| warden_policy::canonicalize(&e)) {
             protected.push(exe);
         }
         if let Some(k) = &o.key_path {
-            protected.push(k.canonicalize().unwrap_or(k.clone()));
+            protected.push(warden_policy::canonicalize(k).unwrap_or(k.clone()));
         }
         let compiled = Arc::new(CompiledPolicy::compile(
             policy,
@@ -156,25 +164,59 @@ pub struct RunOutcome {
 }
 
 /// Find `prog` the way `execvp` would (for granting Landlock execute).
+fn is_pathish(prog: &str) -> bool {
+    prog.contains('/') || (cfg!(windows) && prog.contains('\\'))
+}
+
 fn which(prog: &str) -> Option<PathBuf> {
-    if prog.contains('/') {
-        return Path::new(prog).canonicalize().ok();
-    }
-    std::env::var_os("PATH").and_then(|p| {
-        std::env::split_paths(&p)
-            .map(|d| d.join(prog))
+    let exts: Vec<String> = if cfg!(windows) {
+        let pe = std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.COM".into());
+        std::iter::once(String::new())
+            .chain(pe.split(';').filter(|e| !e.is_empty()).map(String::from))
+            .collect()
+    } else {
+        vec![String::new()]
+    };
+    let try_one = |base: PathBuf| -> Option<PathBuf> {
+        exts.iter()
+            .map(|e| {
+                let mut s = base.clone().into_os_string();
+                s.push(e);
+                PathBuf::from(s)
+            })
             .find(|c| c.is_file())
-            .and_then(|c| c.canonicalize().ok())
-    })
+            .and_then(|c| warden_policy::canonicalize(&c).ok())
+    };
+    if is_pathish(prog) {
+        return try_one(PathBuf::from(prog));
+    }
+    std::env::var_os("PATH")
+        .and_then(|p| std::env::split_paths(&p).find_map(|d| try_one(d.join(prog))))
 }
 
 /// Fingerprint of a file used to detect tampering while the agent runs.
+/// (identity, length, mtime seconds, mtime nanos). Identity is the inode on
+/// Unix and the creation time on Windows.
 type Fingerprint = Option<(u64, u64, i64, i64)>;
 
+#[cfg(unix)]
 fn fingerprint(p: &Path) -> Fingerprint {
     std::fs::metadata(p)
         .ok()
         .map(|m| (m.ino(), m.len(), m.mtime(), m.mtime_nsec()))
+}
+
+#[cfg(windows)]
+fn fingerprint(p: &Path) -> Fingerprint {
+    std::fs::metadata(p).ok().map(|m| {
+        let w = m.last_write_time() as i64; // 100ns ticks
+        (m.creation_time(), m.len(), w / 10_000_000, w % 10_000_000)
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn fingerprint(p: &Path) -> Fingerprint {
+    std::fs::metadata(p).ok().map(|m| (0, m.len(), 0, 0))
 }
 
 /// Launch `agent` under supervision and wait for it. Returns once the agent
@@ -193,9 +235,34 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
 
     let proxy = warden_net::Proxy::start("127.0.0.1:0", pol.clone(), sup.clone())
         .map_err(io("start proxy"))?;
-    let socket = s.state_dir.join("gateway.sock");
     let gw = Arc::new(Gateway::new(sup.clone()));
-    gw.serve_unix(&socket).map_err(io("gateway socket"))?;
+    #[cfg(unix)]
+    let (socket, gw_env) = {
+        let socket = s.state_dir.join("gateway.sock");
+        gw.serve_unix(&socket).map_err(io("gateway socket"))?;
+        let v = socket.display().to_string();
+        (Some(socket), vec![("WARDEN_SOCKET", v)])
+    };
+    // No 0600 Unix socket on Windows: loopback TCP plus a per-session token
+    // that only the agent receives (in its environment).
+    #[cfg(not(unix))]
+    let (socket, gw_env) = {
+        let token = crate::gateway::new_token();
+        let addr = gw
+            .serve_tcp("127.0.0.1:0", token.clone())
+            .map_err(io("gateway listener"))?;
+        (
+            None::<PathBuf>,
+            vec![
+                ("WARDEN_GATEWAY", format!("tcp://{addr}")),
+                ("WARDEN_TOKEN", token),
+            ],
+        )
+    };
+    let gateway_desc = socket
+        .as_ref()
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| gw_env[0].1.clone());
 
     let program = agent
         .first()
@@ -207,7 +274,7 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         spec.read_roots.push(exe.clone());
     }
     // A relative path is relative to where warden was started, not the workspace.
-    let program_path: PathBuf = match (&resolved, program.contains('/')) {
+    let program_path: PathBuf = match (&resolved, is_pathish(program)) {
         (Some(p), true) => p.clone(),
         _ => PathBuf::from(program),
     };
@@ -232,7 +299,7 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         "workspace": pol.workspace(),
         "agent": agent,
         "proxy": proxy.url(),
-        "socket": socket,
+        "socket": gateway_desc,
         "sandbox": layers,
         "warden_pid": std::process::id(),
     }));
@@ -243,7 +310,8 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         .current_dir(pol.workspace())
         .env_clear()
         .envs(pol.build_env(std::env::vars()))
-        .env("WARDEN_SOCKET", &socket)
+        .envs(gw_env.iter().map(|(k, v)| (*k, v.as_str())))
+        .env("WARDEN_STATE_DIR", &s.state_dir)
         .env("WARDEN_PROXY", &proxy_url)
         .env("WARDEN_WORKSPACE", pol.workspace())
         .env("NO_PROXY", "")
@@ -258,6 +326,7 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
     ] {
         cmd.env(k, &proxy_url);
     }
+    #[cfg(unix)]
     cmd.process_group(0);
     for n in sandbox::apply(&mut cmd, &spec) {
         eprintln!("warden: {n}");
@@ -266,20 +335,43 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
 
     // Signals -> manual kill.
     let sig = Arc::new(AtomicBool::new(false));
-    for s_ in [
+    #[cfg(unix)]
+    let sigs = [
         signal_hook::consts::SIGTERM,
         signal_hook::consts::SIGINT,
         signal_hook::consts::SIGUSR1,
-    ] {
+    ];
+    #[cfg(not(unix))]
+    let sigs = [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT];
+    for s_ in sigs {
         signal_hook::flag::register(s_, sig.clone()).map_err(io("signal handler"))?;
     }
 
     let mut child = cmd.spawn().map_err(io(format!("spawn {program}")))?;
     let pid = child.id() as i32;
-    sup.set_kill_target(KillTarget {
-        pgid: pid,
-        tree_root: std::process::id() as i32,
-    });
+    #[cfg(unix)]
+    let target = KillTarget::group(pid, std::process::id() as i32);
+    // Windows: the agent and everything it starts live in a kill-on-close
+    // Job Object. Assignment happens right after spawn; a process created in
+    // that window (microseconds) would escape the job, but is still caught
+    // by `taskkill /T` if the job is unavailable.
+    #[cfg(windows)]
+    let target = match crate::kill::Job::new().and_then(|j| j.assign(&child).map(|_| j)) {
+        Ok(j) => KillTarget::Job {
+            job: Arc::new(j),
+            pid: pid as u32,
+        },
+        Err(e) => {
+            eprintln!("warden: WARNING job object unavailable ({e}); falling back to taskkill");
+            sup.log(
+                json!({"kind": "sandbox_note", "note": format!("job object unavailable: {e}")}),
+            );
+            KillTarget::group(pid, pid)
+        }
+    };
+    #[cfg(not(any(unix, windows)))]
+    let target = KillTarget::group(pid, pid);
+    sup.set_kill_target(target.clone());
     sup.log(json!({"kind": "agent_spawned", "pid": pid}));
 
     let state_file = s.state_dir.join("warden.json");
@@ -289,7 +381,7 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         "warden_pid": std::process::id(),
         "agent_pid": pid,
         "agent_pgid": pid,
-        "socket": socket,
+        "socket": gateway_desc,
         "proxy": proxy_url,
         "log": s.log_path,
         "started": SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
@@ -326,7 +418,7 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         if sig.swap(false, Ordering::SeqCst) {
             sup.halt(
                 TripKind::Manual,
-                "signal received by warden (SIGTERM/SIGINT/SIGUSR1)".into(),
+                "signal received by warden (SIGTERM/SIGINT/SIGUSR1/Ctrl-C)".into(),
             );
         }
         for (name, p, fp) in &watched {
@@ -346,13 +438,25 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
         std::thread::sleep(Duration::from_millis(25));
     };
     // Sweep stragglers (e.g. daemonized grandchildren) even on normal exit.
-    let leftovers = crate::kill::descendants(std::process::id() as i32);
-    if !leftovers.is_empty() {
-        crate::kill::kill_tree(pid, std::process::id() as i32, Duration::from_millis(500));
-    }
+    #[cfg(unix)]
+    let leftovers = {
+        let l = crate::kill::descendants(std::process::id() as i32);
+        if !l.is_empty() {
+            target.kill(Duration::from_millis(500));
+        }
+        l.len()
+    };
+    #[cfg(windows)]
+    let leftovers = match &target {
+        KillTarget::Job { job, .. } => job.terminate(),
+        _ => 0,
+    };
+    #[cfg(not(any(unix, windows)))]
+    let leftovers = 0usize;
     proxy.stop();
     let halted = sup.halt_info();
-    let code = match (&halted, status.code(), status.signal()) {
+    let signal = crate::exec::exit_signal(&status);
+    let code = match (&halted, status.code(), signal) {
         (Some(_), _, _) => crate::HALT_EXIT_CODE,
         (None, Some(c), _) => c,
         (None, None, Some(sg)) => 128 + sg,
@@ -361,12 +465,14 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
     sup.log(json!({
         "kind": "session_end",
         "agent_exit_code": status.code(),
-        "agent_signal": status.signal(),
+        "agent_signal": signal,
         "halted": halted,
         "counters": sup.counters(),
-        "leftover_processes_killed": leftovers.len(),
+        "leftover_processes_killed": leftovers,
     }));
-    let _ = std::fs::remove_file(&socket);
+    if let Some(sock) = &socket {
+        let _ = std::fs::remove_file(sock);
+    }
     let _ = std::fs::remove_file(&state_file);
     Ok(RunOutcome {
         exit_code: code,
@@ -376,7 +482,8 @@ pub fn run(o: &SessionOptions, agent: &[String]) -> Result<RunOutcome, LaunchErr
 }
 
 /// Serve the gateway on stdio (for harnesses that spawn warden as an MCP
-/// server). If `kill_pgid` is set, that process group is killed on halt.
+/// server). If `kill_pgid` is set, that process group (Windows: that pid's
+/// process tree) is killed on halt.
 pub fn gateway_stdio(
     o: &SessionOptions,
     kill_pgid: Option<i32>,
@@ -390,10 +497,7 @@ pub fn gateway_stdio(
         "workspace": s.policy.workspace(),
     }));
     if let Some(p) = kill_pgid {
-        s.sup.set_kill_target(KillTarget {
-            pgid: p,
-            tree_root: p,
-        });
+        s.sup.set_kill_target(KillTarget::group(p, p));
     }
     let gw = Gateway::new(s.sup.clone());
     let _ = gw.serve(std::io::stdin().lock(), std::io::stdout().lock());

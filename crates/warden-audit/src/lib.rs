@@ -14,6 +14,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
+#[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
@@ -163,11 +164,13 @@ impl AuditLog {
         } else {
             (0, GENESIS.to_string())
         };
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .mode(0o600)
-            .open(path)?;
+        let mut opts = OpenOptions::new();
+        opts.create(true).append(true);
+        // Owner-only on Unix. On Windows the file inherits the ACL of the
+        // state directory (by default only the user and administrators).
+        #[cfg(unix)]
+        opts.mode(0o600);
+        let file = opts.open(path)?;
         Ok(Self {
             file,
             path: path.to_path_buf(),

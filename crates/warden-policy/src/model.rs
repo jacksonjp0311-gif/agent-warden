@@ -299,6 +299,9 @@ fn yes() -> bool {
     true
 }
 fn default_search_path() -> Vec<String> {
+    if cfg!(windows) {
+        return vec!["C:/Windows/System32".into()];
+    }
     ["/usr/local/bin", "/usr/bin", "/bin"]
         .map(String::from)
         .to_vec()
@@ -324,6 +327,15 @@ fn default_file_deny() -> Vec<String> {
         "/etc/sudoers",
         "/proc/*/environ",
         "/proc/*/mem",
+        // Windows credential stores, DPAPI keys, browser profiles, hives.
+        "**/AppData/Roaming/Microsoft/Credentials/**",
+        "**/AppData/Local/Microsoft/Credentials/**",
+        "**/AppData/Roaming/Microsoft/Protect/**",
+        "**/AppData/Local/Google/Chrome/User Data/**",
+        "**/AppData/Local/Microsoft/Edge/User Data/**",
+        "**/AppData/Roaming/Mozilla/Firefox/Profiles/**",
+        "**/NTUSER.DAT*",
+        "C:/Windows/System32/config/**",
     ]
     .map(String::from)
     .to_vec()
@@ -395,12 +407,39 @@ fn default_trip_commands() -> Vec<String> {
         "at",
     ]
     .map(String::from)
-    .to_vec()
+    .into_iter()
+    .chain(
+        // Windows privilege, persistence, firewall and process-killing tools.
+        [
+            "runas", "taskkill", "reg", "regedit", "schtasks", "netsh", "sc", "bcdedit", "wmic",
+            "icacls", "takeown", "vssadmin", "wevtutil",
+        ]
+        .into_iter()
+        .filter(|_| cfg!(windows))
+        .map(String::from),
+    )
+    .collect()
 }
 fn default_env_pass() -> Vec<String> {
-    ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "USER"]
+    let mut v: Vec<String> = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "USER"]
         .map(String::from)
-        .to_vec()
+        .to_vec();
+    if cfg!(windows) {
+        // Needed for Windows programs to start at all.
+        v.extend(
+            [
+                "SYSTEMROOT",
+                "WINDIR",
+                "SYSTEMDRIVE",
+                "TEMP",
+                "TMP",
+                "PATHEXT",
+                "USERPROFILE",
+            ]
+            .map(String::from),
+        );
+    }
+    v
 }
 fn default_scrub() -> Vec<String> {
     [

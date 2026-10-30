@@ -16,6 +16,12 @@ args = ["*"]
 program = "wc"
 args = ["-*", "*"]
 
+# Windows stand-in for `ls`/`cat` (resolved from C:/Windows/System32).
+[[commands.allow]]
+program = "findstr"
+args = ["/*", "*"]
+max_args = 8
+
 [files]
 read = ["${WORKSPACE}/**"]
 write = ["${WORKSPACE}/out/**"]
@@ -28,7 +34,7 @@ allow_methods = ["GET", "HEAD", "POST"]
 [limits]
 actions_per_minute = 600
 max_actions = 1000
-deny_threshold = 8
+deny_threshold = 16
 deny_window_secs = 60
 
 [tripwires]

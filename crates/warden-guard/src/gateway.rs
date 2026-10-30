@@ -7,8 +7,11 @@
 //! Methods:
 //! * MCP: `initialize`, `tools/list`, `tools/call` (`{name, arguments}`),
 //!   `notifications/*` (ignored), `ping`.
-//! * Direct: `exec`, `read_file`, `write_file`, `list_dir`, `http_request`,
-//!   `status`.
+//! * Direct: `exec`, `read_file`, `write_file`, `delete_file`, `list_dir`,
+//!   `http_request`, `status`.
+//!
+//! Transports: stdio, a Unix socket (mode 0600, Unix), or loopback TCP with a
+//! per-session token as the first line (Windows, see [`Gateway::serve_tcp`]).
 //!
 //! Error codes: `-32001` denied by policy, `-32002` session halted,
 //! `-32003` tripwire fired (session halted), `-32601` unknown method,
@@ -20,7 +23,9 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -87,6 +92,11 @@ struct ListParams {
     path: String,
 }
 
+#[derive(Deserialize)]
+struct DeleteParams {
+    path: String,
+}
+
 fn dot() -> String {
     ".".into()
 }
@@ -115,6 +125,13 @@ fn tools() -> Value {
             "description": "Write (or append to) a file inside the policy's write scope.",
             "inputSchema": {"type": "object", "required": ["path", "content"], "properties": {
                 "path": {"type": "string"}, "content": {"type": "string"}, "append": {"type": "boolean"}
+            }}
+        },
+        {
+            "name": "delete_file",
+            "description": "Delete one file (not a directory) inside the policy's write scope.",
+            "inputSchema": {"type": "object", "required": ["path"], "properties": {
+                "path": {"type": "string"}
             }}
         },
         {
@@ -240,6 +257,26 @@ impl Gateway {
                     .map_err(|e| RpcError::new(INTERNAL, e.to_string()))?;
                 Ok(json!({"path": path, "bytes": n, "sha256": sha}))
             }
+            "delete_file" => {
+                let p: DeleteParams = serde_json::from_value(args).map_err(RpcError::params)?;
+                let path = self
+                    .sup
+                    .gate("delete_file", json!({"path": p.path}), || {
+                        pol.check_write(Path::new(&p.path), &ws)
+                    })
+                    .map_err(|v| self.verdict(v))?;
+                let md = std::fs::symlink_metadata(&path)
+                    .map_err(|e| RpcError::new(INTERNAL, format!("{}: {e}", path.display())))?;
+                if md.is_dir() {
+                    return Err(RpcError::new(
+                        DENIED,
+                        format!("denied: {} is a directory", path.display()),
+                    ));
+                }
+                std::fs::remove_file(&path)
+                    .map_err(|e| RpcError::new(INTERNAL, format!("{}: {e}", path.display())))?;
+                Ok(json!({"path": path, "deleted": true}))
+            }
             "list_dir" => {
                 let p: ListParams = serde_json::from_value(args).map_err(RpcError::params)?;
                 let path = self
@@ -317,9 +354,8 @@ impl Gateway {
                     }),
                 })
             }
-            m @ ("exec" | "read_file" | "write_file" | "list_dir" | "http_request") => {
-                self.call_tool(m, params)
-            }
+            m @ ("exec" | "read_file" | "write_file" | "delete_file" | "list_dir"
+            | "http_request") => self.call_tool(m, params),
             other => Err(RpcError::new(
                 NO_METHOD,
                 format!("method not found: {other}"),
@@ -357,7 +393,58 @@ impl Gateway {
         }
     }
 
+    /// Listen on loopback TCP; one thread per connection. Every connection
+    /// must first send `{"method":"warden/auth","params":{"token":"..."}}`
+    /// with the session token, otherwise it is closed. Returns the bound
+    /// address. Used on Windows, where there is no 0600 Unix socket.
+    pub fn serve_tcp(
+        self: &Arc<Self>,
+        addr: &str,
+        token: String,
+    ) -> std::io::Result<std::net::SocketAddr> {
+        let l = std::net::TcpListener::bind(addr)?;
+        let local = l.local_addr()?;
+        let me = self.clone();
+        let token = Arc::new(token);
+        std::thread::Builder::new()
+            .name("warden-gateway".into())
+            .spawn(move || {
+                for c in l.incoming().flatten() {
+                    let g = me.clone();
+                    let token = token.clone();
+                    std::thread::spawn(move || {
+                        let _ = c.set_nodelay(true);
+                        let Ok(mut w) = c.try_clone() else { return };
+                        let mut r = BufReader::new(c);
+                        let mut line = Vec::new();
+                        if (&mut r).take(4096).read_until(b'\n', &mut line).is_err() {
+                            return;
+                        }
+                        let given = serde_json::from_slice::<Value>(&line)
+                            .ok()
+                            .filter(|m| m.get("method").and_then(Value::as_str) == Some("warden/auth"))
+                            .and_then(|m| m.pointer("/params/token")?.as_str().map(String::from))
+                            .unwrap_or_default();
+                        if !ct_eq(given.as_bytes(), token.as_bytes()) {
+                            g.sup.log(json!({"kind": "gateway_auth_failed"}));
+                            let _ = writeln!(
+                                w,
+                                "{}",
+                                json!({"jsonrpc": "2.0", "id": null,
+                                    "error": {"code": DENIED, "message": "denied: bad or missing gateway token"}})
+                            );
+                            return;
+                        }
+                        let _ = writeln!(w, "{}", json!({"jsonrpc": "2.0", "id": null, "result": {"auth": "ok"}}));
+                        let _ = g.serve(r, w);
+                    });
+                }
+            })?;
+        Ok(local)
+    }
+
     /// Listen on a Unix socket (mode 0600); one thread per connection.
+    #[cfg(unix)]
     pub fn serve_unix(self: &Arc<Self>, path: &Path) -> std::io::Result<()> {
         let _ = std::fs::remove_file(path);
         let l = UnixListener::bind(path)?;
@@ -376,5 +463,98 @@ impl Gateway {
                 }
             })?;
         Ok(())
+    }
+}
+
+/// Constant-time byte comparison (length is not secret).
+fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// A fresh random session token (hex, 256 bits).
+pub fn new_token() -> String {
+    use rand::RngCore;
+    let mut b = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut b);
+    hex::encode(b)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpStream;
+    use warden_audit::AuditLog;
+    use warden_policy::{CompiledPolicy, Context, Policy};
+
+    fn gw() -> (tempfile::TempDir, Arc<Gateway>, PathBuf) {
+        let d = tempfile::tempdir().unwrap();
+        let ws = warden_policy::canonicalize(d.path()).unwrap().join("ws");
+        std::fs::create_dir_all(ws.join("out")).unwrap();
+        let p = CompiledPolicy::compile(
+            Policy::from_toml(
+                "[files]\nread = [\"${WORKSPACE}/**\"]\nwrite = [\"${WORKSPACE}/out/**\"]\n",
+            )
+            .unwrap(),
+            &Context {
+                workspace: ws.clone(),
+                protected: vec![],
+            },
+        )
+        .unwrap();
+        let log = AuditLog::open(&d.path().join("a.jsonl"), None).unwrap();
+        let sup = Supervisor::new(Arc::new(p), Some(log));
+        (d, Arc::new(Gateway::new(sup)), ws)
+    }
+
+    #[test]
+    fn delete_file_respects_write_scope() {
+        let (_d, g, ws) = gw();
+        std::fs::write(ws.join("keep.txt"), "x").unwrap();
+        std::fs::write(ws.join("out/tmp.txt"), "x").unwrap();
+        let e = g
+            .call_tool("delete_file", json!({"path": "keep.txt"}))
+            .unwrap_err();
+        assert_eq!(e.code, DENIED);
+        assert!(ws.join("keep.txt").exists());
+        g.call_tool("delete_file", json!({"path": "out/tmp.txt"}))
+            .unwrap();
+        assert!(!ws.join("out/tmp.txt").exists());
+        let e = g
+            .call_tool("delete_file", json!({"path": "out"}))
+            .unwrap_err();
+        assert_eq!(e.code, DENIED, "directories are never deleted");
+    }
+
+    fn roundtrip(addr: std::net::SocketAddr, first: &str) -> (String, String) {
+        let s = TcpStream::connect(addr).unwrap();
+        let mut w = s.try_clone().unwrap();
+        let mut r = BufReader::new(s);
+        writeln!(w, "{first}").unwrap();
+        writeln!(w, r#"{{"jsonrpc":"2.0","id":1,"method":"ping"}}"#).unwrap();
+        let (mut a, mut b) = (String::new(), String::new());
+        let _ = r.read_line(&mut a);
+        let _ = r.read_line(&mut b);
+        (a, b)
+    }
+
+    #[test]
+    fn tcp_gateway_requires_token() {
+        let (_d, g, _ws) = gw();
+        let tok = new_token();
+        assert_eq!(tok.len(), 64);
+        let addr = g.serve_tcp("127.0.0.1:0", tok.clone()).unwrap();
+        let (a, b) = roundtrip(
+            addr,
+            r#"{"method":"warden/auth","params":{"token":"nope"}}"#,
+        );
+        assert!(a.contains("bad or missing gateway token"), "{a}");
+        assert!(b.is_empty(), "connection must be closed: {b}");
+        let (a, b) = roundtrip(addr, r#"{"jsonrpc":"2.0","id":1,"method":"ping"}"#);
+        assert!(a.contains("bad or missing"), "{a}");
+        assert!(b.is_empty());
+        let good = json!({"method": "warden/auth", "params": {"token": tok}}).to_string();
+        let (a, b) = roundtrip(addr, &good);
+        assert!(a.contains("\"auth\":\"ok\""), "{a}");
+        assert!(b.contains("\"result\":{}"), "{b}");
     }
 }

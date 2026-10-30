@@ -80,6 +80,7 @@ fn default_deny_list_wins() {
     );
 }
 
+#[cfg(unix)]
 #[test]
 fn symlink_escape_is_denied() {
     let (_d, c) = setup(BASIC);
@@ -98,12 +99,15 @@ fn protected_paths_trip() {
         "{r:?}"
     );
     // via symlink inside the workspace
-    std::os::unix::fs::symlink(d.path().join("policy.toml"), ws.join("p")).unwrap();
-    let r = c.check_read(Path::new("p"), &ws);
-    assert!(
-        matches!(r, Err(Verdict::Trip(TripKind::ProtectedPath, _))),
-        "{r:?}"
-    );
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(d.path().join("policy.toml"), ws.join("p")).unwrap();
+        let r = c.check_read(Path::new("p"), &ws);
+        assert!(
+            matches!(r, Err(Verdict::Trip(TripKind::ProtectedPath, _))),
+            "{r:?}"
+        );
+    }
 }
 
 #[test]
@@ -114,6 +118,7 @@ fn canary_trips() {
     assert!(matches!(r, Err(Verdict::Trip(TripKind::Canary, _))));
 }
 
+#[cfg(unix)]
 #[test]
 fn commands() {
     let (_d, c) = setup(BASIC);
@@ -150,6 +155,7 @@ fn shells_and_tripwire_commands() {
     ));
 }
 
+#[cfg(unix)]
 #[test]
 fn command_args_touching_protected_paths_trip() {
     let (d, c) = setup(BASIC);
@@ -217,7 +223,11 @@ set = { AGENT = "1" }
     assert_eq!(env.get("HOME").unwrap(), "/h");
     assert!(!env.contains_key("GITHUB_TOKEN"));
     assert!(!env.contains_key("OPENAI_API_KEY"));
-    assert_eq!(env.get("PATH").unwrap(), "/usr/local/bin:/usr/bin:/bin");
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    assert_eq!(
+        env.get("PATH").unwrap(),
+        &c.policy.commands.search_path.join(sep)
+    );
     assert_eq!(env.get("AGENT").unwrap(), "1");
 }
 
@@ -238,4 +248,90 @@ fn shipped_policies_parse() {
         }
     }
     assert!(n >= 2);
+}
+
+#[cfg(windows)]
+const WIN: &str = r#"
+[commands]
+search_path = ["C:/Windows/System32"]
+allow = [
+  { program = "findstr", args = ["/*", "*"] },
+  { program = "whoami" },
+]
+[files]
+read = ["${WORKSPACE}/**"]
+write = ["${WORKSPACE}/out/**"]
+"#;
+
+#[cfg(windows)]
+#[test]
+fn windows_commands_and_shells() {
+    let (d, c) = setup(WIN);
+    let ws = c.workspace().to_path_buf();
+    // Resolution through search_path with an implicit .exe, case-insensitive.
+    assert!(c
+        .check_command("findstr", &["/n".into(), "hi".into()], &ws)
+        .is_ok());
+    assert!(c.check_command("FINDSTR.EXE", &["hi".into()], &ws).is_ok());
+    assert!(c.check_command("whoami", &["/all".into()], &ws).is_err());
+    assert!(c.check_command("notepad", &[], &ws).is_err());
+    for sh in [
+        "cmd",
+        "CMD.EXE",
+        "powershell",
+        "pwsh.exe",
+        "C:/Windows/System32/cmd.exe",
+        "x.bat",
+        "run.CMD",
+    ] {
+        let r = c.check_command(sh, &["/c".into(), "whoami".into()], &ws);
+        assert!(
+            matches!(r, Err(Verdict::Trip(TripKind::Shell, _))),
+            "{sh}: {r:?}"
+        );
+    }
+    for t in ["taskkill", "reg.exe", "schtasks"] {
+        let r = c.check_command(t, &[], &ws);
+        assert!(
+            matches!(r, Err(Verdict::Trip(TripKind::ForbiddenCommand, _))),
+            "{t}: {r:?}"
+        );
+    }
+    // A backslash path argument touching a protected path trips.
+    let pf = d.path().join("policy.toml").display().to_string();
+    let r = c.check_command("findstr", &["x".into(), pf], &ws);
+    assert!(
+        matches!(r, Err(Verdict::Trip(TripKind::ProtectedPath, _))),
+        "{r:?}"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_paths() {
+    let (_d, c) = setup(WIN);
+    let ws = c.workspace().to_path_buf();
+    assert!(c.check_read(Path::new(r"notes.txt"), &ws).is_ok());
+    assert!(
+        c.check_read(Path::new(r"NOTES.TXT"), &ws).is_ok(),
+        "case-insensitive"
+    );
+    assert!(c.check_write(Path::new(r"out\a.txt"), &ws).is_ok());
+    assert!(c.check_write(Path::new(r"notes.txt"), &ws).is_err());
+    assert!(c
+        .check_read(Path::new(r"..\..\..\Windows\win.ini"), &ws)
+        .is_err());
+    assert!(c
+        .check_read(Path::new(r"C:\Windows\System32\config\SAM"), &ws)
+        .is_err());
+    let verbatim = format!(r"\\?\{}\..\x", ws.display());
+    assert!(
+        c.check_read(Path::new(&verbatim), &ws).is_err(),
+        "{verbatim}"
+    );
+    let r = c.check_read(Path::new(r"C:\Users\someone\.ssh\id_rsa"), &ws);
+    assert!(
+        matches!(r, Err(Verdict::Deny(ref m)) if m.contains("files.deny")),
+        "{r:?}"
+    );
 }

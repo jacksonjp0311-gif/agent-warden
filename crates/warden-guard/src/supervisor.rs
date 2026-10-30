@@ -17,15 +17,7 @@ pub struct HaltInfo {
     pub reason: String,
 }
 
-/// Where to deliver the kill.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct KillTarget {
-    /// Process group of the agent (also its pid).
-    pub pgid: i32,
-    /// Root of the process tree to sweep (warden itself when it is a
-    /// child subreaper; otherwise the agent pid).
-    pub tree_root: i32,
-}
+pub use crate::kill::KillTarget;
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct Counters {
@@ -101,9 +93,9 @@ impl Supervisor {
     /// Register the agent process to kill when halting. If the session is
     /// already halted, the kill happens immediately.
     pub fn set_kill_target(&self, t: KillTarget) {
-        *self.target.lock().unwrap() = Some(t);
+        *self.target.lock().unwrap() = Some(t.clone());
         if self.is_halted() {
-            crate::kill::kill_tree(t.pgid, t.tree_root, Duration::from_millis(1500));
+            t.kill(Duration::from_millis(1500));
         }
     }
 
@@ -285,9 +277,10 @@ impl Supervisor {
         for h in self.hooks.lock().unwrap().iter() {
             h(&info);
         }
-        if let Some(t) = *self.target.lock().unwrap() {
-            let n = crate::kill::kill_tree(t.pgid, t.tree_root, Duration::from_millis(1500));
-            self.log(json!({"kind": "killed", "pgid": t.pgid, "processes": n}));
+        let target = self.target.lock().unwrap().clone();
+        if let Some(t) = target {
+            let n = t.kill(Duration::from_millis(1500));
+            self.log(json!({"kind": "killed", "pgid": t.pid(), "processes": n}));
         }
     }
 }

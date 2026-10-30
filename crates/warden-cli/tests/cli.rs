@@ -87,8 +87,14 @@ fn full_demo_blocks_and_trips_on_shell() {
     );
     for blocked in [
         "exec curl",
+        "read ~/.ssh/id_rsa",
+        "read ~/.aws/credentials",
         "read /etc/shadow",
         "write ../escape.txt",
+        "delete notes.txt",
+        "exec rm -rf .",
+        "c2.evil.example/beacon",
+        "cloud metadata 169.254.169.254",
         "pastebin.com",
     ] {
         let line = so
@@ -103,6 +109,11 @@ fn full_demo_blocks_and_trips_on_shell() {
         "agent survived the kill switch:\n{so}"
     );
     assert!(!e.ws.parent().unwrap().join("escape.txt").exists());
+    assert!(e.ws.join("notes.txt").exists(), "notes.txt was deleted");
+    assert!(
+        !so.contains("NOT BLOCKED"),
+        "a direct OS call got through the sandbox:\n{so}"
+    );
     assert_eq!(e.halt_event()["tripwire"], "shell");
     let v = Command::new(WARDEN)
         .arg("verify-log")
@@ -141,6 +152,21 @@ fn secret_exfiltration_trips() {
 }
 
 #[test]
+fn deleting_the_audit_log_trips() {
+    let e = setup();
+    let out = e.run("wipe");
+    assert_eq!(out.status.code(), Some(99), "{}", s(&out.stderr));
+    assert_eq!(e.halt_event()["tripwire"], "protected_path");
+    assert!(!s(&out.stdout).contains("still alive"));
+    let v = Command::new(WARDEN)
+        .arg("verify-log")
+        .arg(e.log())
+        .output()
+        .unwrap();
+    assert!(v.status.success(), "{}", s(&v.stdout));
+}
+
+#[test]
 fn honest_agent_exits_normally() {
     let e = setup();
     let out = e.run("honest");
@@ -154,6 +180,16 @@ fn honest_agent_exits_normally() {
     assert!(e.events().iter().all(|x| x["kind"] != "halt"));
 }
 
+#[cfg(windows)]
+fn alive(pid: i32) -> bool {
+    let o = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .output()
+        .unwrap();
+    s(&o.stdout).contains(&format!("\"{pid}\""))
+}
+
+#[cfg(not(windows))]
 fn alive(pid: i32) -> bool {
     match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         Ok(st) => !st

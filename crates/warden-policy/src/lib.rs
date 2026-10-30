@@ -12,7 +12,9 @@ pub mod paths;
 pub mod secrets;
 
 pub use model::*;
-pub use paths::{expand, lexical_normalize, resolve, Vars};
+pub use paths::{
+    canonicalize, expand, home_dir, lexical_normalize, resolve, simplify, slashed, Vars,
+};
 pub use secrets::SecretScanner;
 
 use globset::{Glob, GlobBuilder, GlobSet, GlobSetBuilder};
@@ -149,6 +151,11 @@ const SHELLS: &[&str] = &[
     "elvish",
     "nu",
     "xonsh",
+    // Windows command interpreters / script hosts.
+    "cmd",
+    "wscript",
+    "cscript",
+    "mshta",
 ];
 const INLINE_INTERPRETERS: &[&str] = &[
     "python",
@@ -179,11 +186,56 @@ fn is_inline_interpreter(name: &str) -> bool {
 }
 
 fn glob(p: &str) -> Result<Glob, PolicyError> {
-    GlobBuilder::new(p)
+    // On Windows, paths are matched `/`-separated (globset normalises the
+    // candidate) and case-insensitively; a `\` in a pattern is a separator,
+    // not an escape.
+    let pat = if cfg!(windows) {
+        p.replace('\\', "/")
+    } else {
+        p.to_string()
+    };
+    GlobBuilder::new(&pat)
         .literal_separator(true)
-        .backslash_escape(true)
+        .backslash_escape(!cfg!(windows))
+        .case_insensitive(cfg!(windows))
         .build()
         .map_err(|e| PolicyError::Glob(p.to_string(), e))
+}
+
+/// Executable extensions Windows runs directly. Batch files (`.bat`/`.cmd`)
+/// are deliberately absent: they execute through `cmd.exe`, i.e. a shell.
+#[cfg(windows)]
+const WIN_EXE_EXT: &[&str] = &["exe", "com"];
+
+/// The comparable name of a program: its basename, and on Windows lower-cased
+/// with any executable/script extension removed (`BASH.EXE` -> `bash`).
+pub fn prog_name(p: &Path) -> String {
+    let n = p
+        .file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    if cfg!(windows) {
+        let l = n.to_ascii_lowercase();
+        for ext in [".exe", ".com", ".bat", ".cmd"] {
+            if let Some(stem) = l.strip_suffix(ext) {
+                return stem.to_string();
+            }
+        }
+        l
+    } else {
+        n
+    }
+}
+
+/// Windows batch scripts run through `cmd.exe`, so they count as shells.
+fn is_batch(p: &Path) -> bool {
+    cfg!(windows)
+        && p.extension()
+            .map(|e| {
+                let e = e.to_string_lossy().to_ascii_lowercase();
+                e == "bat" || e == "cmd"
+            })
+            .unwrap_or(false)
 }
 
 fn path_set<'a>(
@@ -236,11 +288,8 @@ impl Policy {
             w.push("commands.deny_shells = false: an allowed shell can run anything".into());
         }
         for r in &self.commands.allow {
-            let base = Path::new(&r.program)
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default();
-            if is_shell(&base) {
+            let base = prog_name(Path::new(&r.program));
+            if is_shell(&base) || is_batch(Path::new(&r.program)) {
                 w.push(format!("command `{}` is a shell", r.program));
             }
             if r.args
@@ -275,7 +324,7 @@ impl CompiledPolicy {
         let mut prot_pats: Vec<String> = policy.tripwires.protect_paths.clone();
         for p in &ctx.protected {
             let canon = resolve(p, &vars.workspace);
-            let esc = globset::escape(&canon.display().to_string());
+            let esc = globset::escape(&slashed(&canon));
             prot_pats.push(esc.clone());
             if canon.is_dir() {
                 prot_pats.push(format!("{esc}/**"));
@@ -400,10 +449,7 @@ impl CompiledPolicy {
     /// Check a command. Returns the absolute program path that must be executed.
     pub fn check_command(&self, program: &str, args: &[String], cwd: &Path) -> Check<PathBuf> {
         let c = &self.policy.commands;
-        let req_base = Path::new(program)
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let req_base = prog_name(Path::new(program));
 
         // Tripwire commands are checked by requested name first: even trying
         // to run `sudo` is suspicious, whether or not it exists.
@@ -423,7 +469,7 @@ impl CompiledPolicy {
                         ) || (name.contains("awk") && !a.starts_with('-'))
                     }))
         };
-        if c.deny_shells && shellish(&req_base) {
+        if c.deny_shells && (shellish(&req_base) || is_batch(Path::new(program))) {
             return Err(self.shell_verdict(&req_base));
         }
 
@@ -432,24 +478,22 @@ impl CompiledPolicy {
                 "program `{program}` not found on the policy search path"
             )));
         };
-        let res_base = resolved
-            .file_name()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default();
+        let res_base = prog_name(&resolved);
         if self.trip_cmds.contains(&res_base) {
             return Err(Verdict::Trip(
                 TripKind::ForbiddenCommand,
                 format!("`{program}` resolves to tripwire command `{res_base}`"),
             ));
         }
-        if c.deny_shells && shellish(&res_base) {
+        if c.deny_shells && (shellish(&res_base) || is_batch(&resolved)) {
             return Err(self.shell_verdict(&res_base));
         }
         // The program itself or any path-like argument touching protected paths.
         self.trip_path(&resolved, &resolved)?;
         for a in args {
             let cand = a.rsplit('=').next().unwrap_or(a);
-            if cand.contains('/') || cand.starts_with('.') || cand.starts_with('~') {
+            let win_path = cfg!(windows) && (cand.contains('\\') || cand.contains(':'));
+            if cand.contains('/') || cand.starts_with('.') || cand.starts_with('~') || win_path {
                 let p = PathBuf::from(expand(cand, &self.vars));
                 self.trip_path(&lexical_normalize(&p, cwd), &resolve(&p, cwd))?;
             }
@@ -595,13 +639,24 @@ impl CompiledPolicy {
         &self,
         from: impl Iterator<Item = (String, String)>,
     ) -> BTreeMap<String, String> {
-        let pass: HashSet<&str> = self.policy.env.pass.iter().map(|s| s.as_str()).collect();
+        // Windows variable names are case-insensitive (`Path` == `PATH`).
+        let norm = |k: &str| {
+            if cfg!(windows) {
+                k.to_ascii_uppercase()
+            } else {
+                k.to_string()
+            }
+        };
+        let pass: HashSet<String> = self.policy.env.pass.iter().map(|s| norm(s)).collect();
         let mut out: BTreeMap<String, String> = from
-            .filter(|(k, _)| pass.contains(k.as_str()) && !self.scrub.is_match(k))
+            .filter(|(k, _)| pass.contains(&norm(k)) && !self.scrub.is_match(k))
             .collect();
-        if let Some(p) = out.get_mut("PATH") {
-            // Never let the inherited PATH widen what bare names resolve to.
-            *p = self.policy.commands.search_path.join(":");
+        let sep = if cfg!(windows) { ";" } else { ":" };
+        for (k, v) in out.iter_mut() {
+            if norm(k) == "PATH" {
+                // Never let the inherited PATH widen what bare names resolve to.
+                *v = self.policy.commands.search_path.join(sep);
+            }
         }
         for (k, v) in &self.policy.env.set {
             out.insert(k.clone(), v.clone());
@@ -618,21 +673,61 @@ impl CompiledPolicy {
 /// Resolve a program to a canonical absolute path. Bare names are looked up
 /// only in `search_path` (never the agent's PATH).
 pub fn resolve_program(program: &str, search_path: &[String], cwd: &Path) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
-    let is_exec = |p: &Path| {
-        std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    };
-    if program.contains('/') {
-        let p = resolve(Path::new(program), cwd);
-        return is_exec(&p).then_some(p);
+    if program.is_empty() {
+        return None;
+    }
+    let is_pathish = program.contains('/') || (cfg!(windows) && program.contains('\\'));
+    if is_pathish {
+        return candidates(&resolve(Path::new(program), cwd))
+            .into_iter()
+            .find(|p| is_exec(p));
     }
     search_path
         .iter()
-        .map(|d| Path::new(d).join(program))
+        .flat_map(|d| candidates(&Path::new(d).join(program)))
         .find(|p| is_exec(p))
-        .and_then(|p| std::fs::canonicalize(p).ok())
+        .and_then(|p| canonicalize(&p).ok())
+}
+
+#[cfg(unix)]
+fn is_exec(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_exec(p: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let ext_ok = p
+            .extension()
+            .map(|e| {
+                WIN_EXE_EXT
+                    .iter()
+                    .any(|x| e.to_string_lossy().eq_ignore_ascii_case(x))
+            })
+            .unwrap_or(false);
+        if !ext_ok {
+            return false;
+        }
+    }
+    std::fs::metadata(p).map(|m| m.is_file()).unwrap_or(false)
+}
+
+/// Paths to try for `p`: itself, and on Windows with `.exe`/`.com` appended.
+fn candidates(p: &Path) -> Vec<PathBuf> {
+    #[allow(unused_mut)]
+    let mut v = vec![p.to_path_buf()];
+    #[cfg(windows)]
+    for ext in WIN_EXE_EXT {
+        let mut s = p.as_os_str().to_os_string();
+        s.push(".");
+        s.push(ext);
+        v.push(PathBuf::from(s));
+    }
+    v
 }
 
 /// Classify IPs agents must never reach: loopback, private, link-local

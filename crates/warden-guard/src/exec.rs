@@ -3,6 +3,7 @@
 use crate::sandbox::{self, SandboxSpec};
 use serde::Serialize;
 use std::io::Read;
+#[cfg(unix)]
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -66,8 +67,15 @@ pub fn run(
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0);
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
+    cmd.process_group(0);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW: tools never pop up a console window.
+        cmd.creation_flags(0x0800_0000);
+    }
     let mut spec = SandboxSpec::from_policy(policy);
     // Tools run by the gateway get no network at all; egress goes through
     // http_request or the proxy, which the agent itself has to use.
@@ -79,6 +87,17 @@ pub fn run(
     sandbox::apply(&mut cmd, &spec);
 
     let mut child = cmd.spawn()?;
+    // Windows: every exec gets its own Job Object so a timeout or the end of
+    // the call ends the whole tree (the job also dies with warden).
+    #[cfg(windows)]
+    let job = {
+        let j = crate::kill::Job::new()?;
+        if let Err(e) = j.assign(&child) {
+            let _ = child.kill();
+            return Err(e);
+        }
+        j
+    };
     if let (Some(input), Some(mut si)) = (stdin, child.stdin.take()) {
         let data = input.as_bytes().to_vec();
         std::thread::spawn(move || {
@@ -89,7 +108,18 @@ pub fn run(
     let cap = pol.commands.max_output_bytes;
     let out = read_capped(child.stdout.take().unwrap(), cap);
     let err = read_capped(child.stderr.take().unwrap(), cap);
+    #[cfg(unix)]
     let pgid = child.id() as i32;
+    #[cfg(unix)]
+    let kill_all = || unsafe {
+        libc::kill(-pgid, libc::SIGKILL);
+    };
+    #[cfg(windows)]
+    let kill_all = || {
+        job.terminate();
+    };
+    #[cfg(not(any(unix, windows)))]
+    let kill_all = || {};
     let deadline = Instant::now() + Duration::from_secs(pol.commands.timeout_secs.max(1));
     let mut timed_out = false;
     let status = loop {
@@ -98,20 +128,21 @@ pub fn run(
         }
         if Instant::now() >= deadline {
             timed_out = true;
-            unsafe { libc::kill(-pgid, libc::SIGKILL) };
+            kill_all();
+            let _ = child.kill();
             break child.wait()?;
         }
         std::thread::sleep(Duration::from_millis(10));
     };
-    // Reap anything the command left behind in its group.
-    unsafe { libc::kill(-pgid, libc::SIGKILL) };
+    // Reap anything the command left behind in its group / job.
+    kill_all();
     // A detached grandchild (setsid) could keep the pipes open forever;
     // bound how long we wait for them.
     let (o, t1) = join_bounded(out);
     let (e, t2) = join_bounded(err);
     Ok(ExecOutput {
         exit_code: status.code(),
-        signal: status.signal(),
+        signal: exit_signal(&status),
         stdout: String::from_utf8_lossy(&o).into_owned(),
         stderr: String::from_utf8_lossy(&e).into_owned(),
         truncated: t1 || t2,
@@ -130,4 +161,14 @@ fn join_bounded(h: std::thread::JoinHandle<(Vec<u8>, bool)>) -> (Vec<u8>, bool) 
             true,
         )
     })
+}
+
+#[cfg(unix)]
+pub(crate) fn exit_signal(s: &std::process::ExitStatus) -> Option<i32> {
+    s.signal()
+}
+
+#[cfg(not(unix))]
+pub(crate) fn exit_signal(_s: &std::process::ExitStatus) -> Option<i32> {
+    None
 }
