@@ -1,0 +1,8 @@
+warden: landlock: ABI v6, fs confined, tcp connect only to ports [39187]
+warden: seccomp: dangerous-syscall blocklist
+warden: rlimits: [(Core, 0)]
+[rogue] trying to smuggle credentials out in an HTTP body...
+warden: TRIP  http_request {"bytes":74,"host":"example.com","method":"POST","path":"/upload","port":443,"via":"gateway-http"} -- outbound payload contains a secret (aws-access-key-id)
+warden: *** HALT (secret_exfil) outbound payload contains a secret (aws-access-key-id) ***
+warden: session over: 1 actions, 0 allowed, 1 denied, 0 bytes out
+warden: agent was HALTED (secret_exfil): outbound payload contains a secret (aws-access-key-id)

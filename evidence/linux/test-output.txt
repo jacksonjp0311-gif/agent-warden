@@ -1,0 +1,101 @@
+
+running 8 tests
+test tests::canonical_json_is_order_independent ... ok
+test tests::deleting_head_is_detected ... ok
+test tests::reopen_continues_chain_and_refuses_corrupt ... ok
+test tests::deletion_is_detected ... ok
+test tests::intact_log_verifies ... ok
+test tests::edit_is_detected ... ok
+test tests::truncation_is_detected_via_head ... ok
+test tests::rehash_without_key_fails_signature_check ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 12 tests
+test gateway_stdio_mcp ... ok
+test deleting_the_audit_log_trips ... ok
+test secret_exfiltration_trips ... ok
+test state_dir_inside_workspace_is_refused ... ok
+test honest_agent_exits_normally ... ok
+test deny_threshold_halts_agent ... ok
+test full_demo_blocks_and_trips_on_shell ... ok
+test shipped_policies_check ... ok
+test verify_log_detects_tampering ... ok
+test signed_log_roundtrip ... ok
+test policy_tamper_trips ... ok
+test kill_switch_terminates_whole_tree ... ok
+
+test result: ok. 12 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.45s
+
+running 11 tests
+test sandbox::tests::glob_roots ... ok
+test sandbox::tests::seccomp_blocks_unshare ... ok
+test sandbox::tests::landlock_blocks_reads_outside_roots ... ok
+test supervisor::tests::budget_halts ... ok
+test supervisor::tests::byte_budget ... ok
+test gateway::tests::tcp_gateway_requires_token ... ok
+test supervisor::tests::tripwire_halts_and_runs_hooks ... ok
+test supervisor::tests::rate_limit_denies ... ok
+test gateway::tests::delete_file_respects_write_scope ... ok
+test supervisor::tests::deny_threshold_halts ... ok
+test kill::tests::kills_group_and_escaped_children ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.35s
+
+running 5 tests
+test tests::url_parsing ... ok
+test tests::fetch_checks_policy_before_network ... ok
+test tests::metadata_ip_blocked_even_if_allowlisted ... ok
+test tests::oversized_body_rejected ... ok
+test tests::proxy_forwards_allowed_and_blocks_others ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+running 20 tests
+test paths::tests::dotdot_cannot_escape_lexically ... ok
+test paths::tests::nonexistent_tail_kept ... ok
+test paths::tests::symlink_is_resolved ... ok
+test secrets::tests::custom_patterns ... ok
+test secrets::tests::detects_common_keys ... ok
+test tests::default_deny_list_wins ... ok
+test tests::domains_and_ports ... ok
+test tests::commands ... ok
+test tests::forbidden_ips ... ok
+test tests::command_args_touching_protected_paths_trip ... ok
+test tests::empty_policy_denies_everything ... ok
+test tests::shipped_policies_parse ... ok
+test tests::env_is_scrubbed ... ok
+test tests::unknown_fields_rejected ... ok
+test tests::canary_trips ... ok
+test tests::file_scopes ... ok
+test tests::symlink_escape_is_denied ... ok
+test tests::protected_paths_trip ... ok
+test tests::shells_and_tripwire_commands ... ok
+test tests::payload_checks ... ok
+
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1,0 +1,5 @@
+[rogue] job breakaway refused (Access is denied. (os error 5)); detaching instead
+[rogue] spawned detached grandchild pid 3988
+[rogue] ready; idling until someone stops me
+[rogue] ready; idling until someone stops me
+

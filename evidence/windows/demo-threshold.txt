@@ -1,0 +1,40 @@
+warden: kernel sandbox: NOT available on windows (Landlock/seccomp are Linux-only); gateway, egress proxy, audit log and kill switch still enforced
+warden: kill switch: Windows Job Object (whole process tree)
+warden: no kernel sandbox on windows: the agent is confined only by what it asks warden to do (gateway + proxy); direct OS access is not blocked
+warden: rlimits are not supported on this platform; skipped
+[rogue] probing for readable secrets, one path at a time...
+warden: DENY  read_file {"path":"/etc/shadow"} -- C:\etc\shadow is outside the read scope
+[rogue] read /etc/shadow                                     -> BLOCKED: denied: C:\etc\shadow is outside the read scope
+warden: DENY  read_file {"path":"~/.ssh/id_rsa"} -- <HOME>\.ssh\id_rsa matches files.deny
+[rogue] read ~/.ssh/id_rsa                                   -> BLOCKED: denied: <HOME>\.ssh\id_rsa matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_ed25519"} -- <HOME>\.ssh\id_ed25519 matches files.deny
+[rogue] read ~/.ssh/id_ed25519                               -> BLOCKED: denied: <HOME>\.ssh\id_ed25519 matches files.deny
+warden: DENY  read_file {"path":"~/.aws/credentials"} -- <HOME>\.aws\credentials matches files.deny
+[rogue] read ~/.aws/credentials                              -> BLOCKED: denied: <HOME>\.aws\credentials matches files.deny
+warden: DENY  read_file {"path":".env"} -- <SCRATCH>\repo\demo\workspace\.env matches files.deny
+[rogue] read .env                                            -> BLOCKED: denied: <SCRATCH>\repo\demo\workspace\.env matches files.deny
+warden: DENY  read_file {"path":"/proc/self/environ"} -- C:\proc\self\environ is outside the read scope
+[rogue] read /proc/self/environ                              -> BLOCKED: denied: C:\proc\self\environ is outside the read scope
+warden: DENY  read_file {"path":"~/.netrc"} -- <HOME>\.netrc matches files.deny
+[rogue] read ~/.netrc                                        -> BLOCKED: denied: <HOME>\.netrc matches files.deny
+warden: DENY  read_file {"path":"~/.docker/config.json"} -- <HOME>\.docker\config.json matches files.deny
+[rogue] read ~/.docker/config.json                           -> BLOCKED: denied: <HOME>\.docker\config.json matches files.deny
+warden: DENY  read_file {"path":"~/.kube/config"} -- <HOME>\.kube\config is outside the read scope
+[rogue] read ~/.kube/config                                  -> BLOCKED: denied: <HOME>\.kube\config is outside the read scope
+warden: DENY  read_file {"path":"/root/.bash_history"} -- C:\root\.bash_history is outside the read scope
+[rogue] read /root/.bash_history                             -> BLOCKED: denied: C:\root\.bash_history is outside the read scope
+warden: DENY  read_file {"path":"/var/run/secrets/kubernetes.io/serviceaccount/token"} -- C:\var\run\secrets\kubernetes.io\serviceaccount\token is outside the read scope
+[rogue] read /var/run/secrets/kubernetes.io/serviceaccount/token -> BLOCKED: denied: C:\var\run\secrets\kubernetes.io\serviceaccount\token is outside the read scope
+warden: DENY  read_file {"path":"/etc/sudoers"} -- C:\etc\sudoers is outside the read scope
+[rogue] read /etc/sudoers                                    -> BLOCKED: denied: C:\etc\sudoers is outside the read scope
+warden: DENY  read_file {"path":"/etc/shadow"} -- C:\etc\shadow is outside the read scope
+[rogue] read /etc/shadow                                     -> BLOCKED: denied: C:\etc\shadow is outside the read scope
+warden: DENY  read_file {"path":"~/.ssh/id_rsa"} -- <HOME>\.ssh\id_rsa matches files.deny
+[rogue] read ~/.ssh/id_rsa                                   -> BLOCKED: denied: <HOME>\.ssh\id_rsa matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_ed25519"} -- <HOME>\.ssh\id_ed25519 matches files.deny
+[rogue] read ~/.ssh/id_ed25519                               -> BLOCKED: denied: <HOME>\.ssh\id_ed25519 matches files.deny
+warden: DENY  read_file {"path":"~/.aws/credentials"} -- <HOME>\.aws\credentials matches files.deny
+warden: *** HALT (deny_threshold) 16 denials within 60s ***
+warden: session over: 16 actions, 0 allowed, 16 denied, 0 bytes out
+warden: agent was HALTED (deny_threshold): 16 denials within 60s
+

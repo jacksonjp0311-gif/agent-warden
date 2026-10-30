@@ -38,7 +38,9 @@ jobs:
       - name: demo
         run: ./demo/run-demo.sh
 
+  # Windows runners bill at 2x; run this job only when dispatched by hand.
   windows:
+    if: github.event_name == 'workflow_dispatch'
     runs-on: windows-latest
     timeout-minutes: 25
     steps:

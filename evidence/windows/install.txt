@@ -1,0 +1,8 @@
+  Installing warden-cli v0.1.0 (<SCRATCH>\repo\crates\warden-cli)
+    Finished `release` profile [optimized] target(s) in 27.36s
+  Installing <SCRATCH>\inst\bin\rogue-agent.exe
+  Installing <SCRATCH>\inst\bin\warden.exe
+   Installed package `warden-cli v0.1.0 (<SCRATCH>\repo\crates\warden-cli)` (executables `rogue-agent.exe`, `warden.exe`)
+warning: be sure to add `<SCRATCH>\inst\bin` to your PATH to be able to run the installed binaries
+warden 0.1.0
+

@@ -1,0 +1,14 @@
+demo-full=99
+verify-full=0
+demo-wipe=99
+verify-wipe=0
+demo-threshold=99
+verify-threshold=0
+demo-exfil=99
+verify-exfil=0
+demo-honest=0
+verify-honest=0
+notes.txt still present: True
+verify-tampered=1
+demo-kill(run-demo.sh)=0
+install=0

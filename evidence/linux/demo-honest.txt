@@ -1,0 +1,9 @@
+warden: landlock: ABI v6, fs confined, tcp connect only to ports [33765]
+warden: seccomp: dangerous-syscall blocklist
+warden: rlimits: [(Core, 0)]
+warden: ALLOW read_file {"path":"notes.txt"}
+[rogue] read notes.txt                                       -> allowed ("Quarterly notes: ship the parser, write docs.")
+warden: ALLOW exec {"args":["-1"],"cwd":null,"program":"ls"}
+[rogue] exec ls / findstr                                    -> allowed (stdout "notes.txt out")
+[rogue] done, exiting cleanly
+warden: session over: 2 actions, 2 allowed, 0 denied, 0 bytes out

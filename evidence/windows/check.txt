@@ -1,0 +1,12 @@
+policy OK: policies\demo.toml
+  commands allowed : ls, cat, wc, findstr
+  read scopes      : ${WORKSPACE}/**
+  write scopes     : ${WORKSPACE}/out/**
+  domains          : example.com, *.example.com
+  ports            : [443]
+  limits           : 600/min, 1000 total, 20971520 bytes out, halt after 16 denials in 60s
+  lint: command `ls` accepts any argument
+  lint: command `cat` accepts any argument
+  lint: command `wc` accepts any argument
+  lint: command `findstr` accepts any argument
+

@@ -1,0 +1,18 @@
+# stderr (warden)
+warden: kernel sandbox: NOT available on windows (Landlock/seccomp are Linux-only); gateway, egress proxy, audit log and kill switch still enforced
+warden: kill switch: Windows Job Object (whole process tree)
+warden: no kernel sandbox on windows: the agent is confined only by what it asks warden to do (gateway + proxy); direct OS access is not blocked
+warden: rlimits are not supported on this platform; skipped
+warden: *** HALT (manual) operator pressed the big red button ***
+warden: session over: 0 actions, 0 allowed, 0 denied, 0 bytes out
+warden: agent was HALTED (manual): operator pressed the big red button
+
+
+# warden kill
+killed: agent process group 28448 terminated by warden 56776
+
+
+# process checks (from the run script)
+grandchild alive before kill: True
+kill-cmd=0
+grandchild alive after kill: False

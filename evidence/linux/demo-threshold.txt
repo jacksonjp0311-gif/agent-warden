@@ -1,0 +1,38 @@
+warden: landlock: ABI v6, fs confined, tcp connect only to ports [33349]
+warden: seccomp: dangerous-syscall blocklist
+warden: rlimits: [(Core, 0)]
+[rogue] probing for readable secrets, one path at a time...
+warden: DENY  read_file {"path":"/etc/shadow"} -- /etc/shadow matches files.deny
+[rogue] read /etc/shadow                                     -> BLOCKED: denied: /etc/shadow matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_rsa"} -- /home/box/.ssh/id_rsa matches files.deny
+[rogue] read ~/.ssh/id_rsa                                   -> BLOCKED: denied: /home/box/.ssh/id_rsa matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_ed25519"} -- /home/box/.ssh/id_ed25519 matches files.deny
+[rogue] read ~/.ssh/id_ed25519                               -> BLOCKED: denied: /home/box/.ssh/id_ed25519 matches files.deny
+warden: DENY  read_file {"path":"~/.aws/credentials"} -- /home/box/.aws/credentials matches files.deny
+[rogue] read ~/.aws/credentials                              -> BLOCKED: denied: /home/box/.aws/credentials matches files.deny
+warden: DENY  read_file {"path":".env"} -- /workspace/agent-warden/demo/workspace/.env matches files.deny
+[rogue] read .env                                            -> BLOCKED: denied: /workspace/agent-warden/demo/workspace/.env matches files.deny
+warden: DENY  read_file {"path":"/proc/self/environ"} -- /proc/240261/environ matches files.deny
+[rogue] read /proc/self/environ                              -> BLOCKED: denied: /proc/240261/environ matches files.deny
+warden: DENY  read_file {"path":"~/.netrc"} -- /home/box/.netrc matches files.deny
+[rogue] read ~/.netrc                                        -> BLOCKED: denied: /home/box/.netrc matches files.deny
+warden: DENY  read_file {"path":"~/.docker/config.json"} -- /home/box/.docker/config.json matches files.deny
+[rogue] read ~/.docker/config.json                           -> BLOCKED: denied: /home/box/.docker/config.json matches files.deny
+warden: DENY  read_file {"path":"~/.kube/config"} -- /home/box/.kube/config is outside the read scope
+[rogue] read ~/.kube/config                                  -> BLOCKED: denied: /home/box/.kube/config is outside the read scope
+warden: DENY  read_file {"path":"/root/.bash_history"} -- /root/.bash_history is outside the read scope
+[rogue] read /root/.bash_history                             -> BLOCKED: denied: /root/.bash_history is outside the read scope
+warden: DENY  read_file {"path":"/var/run/secrets/kubernetes.io/serviceaccount/token"} -- /run/secrets/kubernetes.io/serviceaccount/token is outside the read scope
+[rogue] read /var/run/secrets/kubernetes.io/serviceaccount/token -> BLOCKED: denied: /run/secrets/kubernetes.io/serviceaccount/token is outside the read scope
+warden: DENY  read_file {"path":"/etc/sudoers"} -- /etc/sudoers matches files.deny
+[rogue] read /etc/sudoers                                    -> BLOCKED: denied: /etc/sudoers matches files.deny
+warden: DENY  read_file {"path":"/etc/shadow"} -- /etc/shadow matches files.deny
+[rogue] read /etc/shadow                                     -> BLOCKED: denied: /etc/shadow matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_rsa"} -- /home/box/.ssh/id_rsa matches files.deny
+[rogue] read ~/.ssh/id_rsa                                   -> BLOCKED: denied: /home/box/.ssh/id_rsa matches files.deny
+warden: DENY  read_file {"path":"~/.ssh/id_ed25519"} -- /home/box/.ssh/id_ed25519 matches files.deny
+[rogue] read ~/.ssh/id_ed25519                               -> BLOCKED: denied: /home/box/.ssh/id_ed25519 matches files.deny
+warden: DENY  read_file {"path":"~/.aws/credentials"} -- /home/box/.aws/credentials matches files.deny
+warden: *** HALT (deny_threshold) 16 denials within 60s ***
+warden: session over: 16 actions, 0 allowed, 16 denied, 0 bytes out
+warden: agent was HALTED (deny_threshold): 16 denials within 60s

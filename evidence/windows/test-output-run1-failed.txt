@@ -1,0 +1,60 @@
+# First Windows run (commit 76f16ce): 1 failure, kept for the record. Fixed in 83e970f.
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 24.35s
+     Running unittests src\lib.rs (target\debug\deps\warden_audit-0d67fcbb35312984.exe)
+
+running 8 tests
+test tests::canonical_json_is_order_independent ... ok
+test tests::deleting_head_is_detected ... ok
+test tests::reopen_continues_chain_and_refuses_corrupt ... ok
+test tests::intact_log_verifies ... ok
+test tests::edit_is_detected ... ok
+test tests::truncation_is_detected_via_head ... ok
+test tests::deletion_is_detected ... ok
+test tests::rehash_without_key_fails_signature_check ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+
+     Running unittests src\bin\rogue-agent.rs (target\debug\deps\rogue_agent-69b4e733243bd2a9.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src\main.rs (target\debug\deps\warden-41e59c7247e3528f.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests\cli.rs (target\debug\deps\cli-8fe5c3fabcb9efd8.exe)
+
+running 12 tests
+test state_dir_inside_workspace_is_refused ... ok
+test gateway_stdio_mcp ... ok
+test shipped_policies_check ... ok
+test kill_switch_terminates_whole_tree ... FAILED
+test secret_exfiltration_trips ... ok
+test deleting_the_audit_log_trips ... ok
+test deny_threshold_halts_agent ... ok
+test honest_agent_exits_normally ... ok
+test verify_log_detects_tampering ... ok
+test full_demo_blocks_and_trips_on_shell ... ok
+test signed_log_roundtrip ... ok
+test policy_tamper_trips ... ok
+
+failures:
+
+---- kill_switch_terminates_whole_tree stdout ----
+
+thread 'kill_switch_terminates_whole_tree' (43336) panicked at crates\warden-cli\tests\cli.rs:242:5:
+assertion failed: alive(gpid)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    kill_switch_terminates_whole_tree
+
+test result: FAILED. 11 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.83s
+
+error: test failed, to rerun pass `-p warden-cli --test cli`
+

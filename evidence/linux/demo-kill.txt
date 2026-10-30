@@ -1,0 +1,25 @@
+== policy ==
+policy OK: policies/demo.toml
+  commands allowed : ls, cat, wc, findstr
+  read scopes      : ${WORKSPACE}/**
+  write scopes     : ${WORKSPACE}/out/**
+  domains          : example.com, *.example.com
+  ports            : [443]
+  limits           : 600/min, 1000 total, 20971520 bytes out, halt after 16 denials in 60s
+
+== starting an agent that daemonizes a grandchild, then pressing the kill switch ==
+warden: landlock: ABI v6, fs confined, tcp connect only to ports [40183]
+warden: seccomp: dangerous-syscall blocklist
+warden: rlimits: [(Core, 0)]
+[rogue] spawned detached grandchild pid 240322
+[rogue] ready; idling until someone stops me
+warden: *** HALT (manual) operator pressed the big red button ***
+warden: session over: 0 actions, 0 allowed, 0 denied, 0 bytes out
+warden: agent was HALTED (manual): operator pressed the big red button
+killed: agent process group 240321 terminated by warden 240317
+
+== warden exit code: 99 (99 = agent halted by warden) ==
+
+== audit log ==
+OK: 5 records, chain intact, head d692f2a77b097fe8b2f0b2898ffcceadb25d13ca15420a1324d2502b269b510f, head file matches
+"kind":"halt","reason":"operator pressed the big red button","tripwire":"manual"
