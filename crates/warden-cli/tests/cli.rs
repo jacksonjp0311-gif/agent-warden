@@ -228,6 +228,9 @@ fn start_escape(e: &Env) -> (std::process::Child, i32) {
         }
     }
     assert!(gpid > 0, "grandchild never started");
+    // Keep draining the pipe so nobody in the tree dies of a broken pipe
+    // before the kill switch gets a chance to act.
+    std::thread::spawn(move || std::io::copy(&mut r, &mut std::io::sink()));
     while !e.state.join("warden.json").exists() {
         assert!(Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(20));

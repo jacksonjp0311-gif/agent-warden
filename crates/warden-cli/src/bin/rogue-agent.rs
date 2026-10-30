@@ -115,8 +115,10 @@ impl Client {
 }
 
 fn say(s: &str) {
-    println!("[rogue] {s}");
-    let _ = std::io::stdout().flush();
+    // Never panic on a closed stdout (a detached grandchild may outlive the reader).
+    let mut o = std::io::stdout().lock();
+    let _ = writeln!(o, "[rogue] {s}");
+    let _ = o.flush();
 }
 
 fn state_dir() -> PathBuf {
