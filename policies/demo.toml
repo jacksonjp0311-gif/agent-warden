@@ -1,0 +1,35 @@
+# Policy used by demo/run-demo.sh and the integration tests.
+[meta]
+name = "demo"
+description = "Workspace-only file access, a few read-only tools, example.com egress"
+
+[[commands.allow]]
+program = "ls"
+args = ["-*", "*"]
+max_args = 8
+
+[[commands.allow]]
+program = "cat"
+args = ["*"]
+
+[[commands.allow]]
+program = "wc"
+args = ["-*", "*"]
+
+[files]
+read = ["${WORKSPACE}/**"]
+write = ["${WORKSPACE}/out/**"]
+
+[network]
+allow_domains = ["example.com", "*.example.com"]
+allow_ports = [443]
+allow_methods = ["GET", "HEAD", "POST"]
+
+[limits]
+actions_per_minute = 600
+max_actions = 1000
+deny_threshold = 8
+deny_window_secs = 60
+
+[tripwires]
+canary_paths = ["${WORKSPACE}/.secrets/aws_credentials"]

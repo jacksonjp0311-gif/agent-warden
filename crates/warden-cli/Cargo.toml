@@ -1,0 +1,35 @@
+[package]
+name = "warden-cli"
+description = "agent-warden command line: run an AI agent under a default-deny policy with a kill switch"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "warden"
+path = "src/main.rs"
+
+[[bin]]
+name = "rogue-agent"
+path = "src/bin/rogue-agent.rs"
+
+[features]
+default = ["landlock", "seccomp"]
+landlock = ["warden-guard/landlock"]
+seccomp = ["warden-guard/seccomp"]
+
+[dependencies]
+warden-policy = { path = "../warden-policy" }
+warden-audit = { path = "../warden-audit" }
+warden-net = { path = "../warden-net" }
+warden-guard = { path = "../warden-guard", default-features = false }
+clap.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json.workspace = true

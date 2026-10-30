@@ -1,0 +1,39 @@
+# CI runs only on pushes, pull requests and manual dispatch.
+# There is intentionally NO `schedule:` trigger, to conserve GitHub Actions
+# minutes. Please keep it that way.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: fmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: clippy (no sandbox features)
+        run: cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+      - name: test
+        run: cargo test --workspace
+      - name: demo
+        run: ./demo/run-demo.sh

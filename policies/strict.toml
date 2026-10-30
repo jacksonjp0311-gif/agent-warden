@@ -1,0 +1,77 @@
+# strict.toml: for untrusted or autonomous agents.
+#
+# * read-only workspace except ./out, no shells, a handful of read-only tools
+# * a single API domain, HTTPS only, small payloads, secret scanning
+# * tight budgets; three denials in a minute halts the agent
+# * UDP blocked (stops DNS tunnelling; the proxy resolves names for the agent)
+[meta]
+name = "strict"
+description = "Default-deny, minimal capabilities, hair-trigger kill switch"
+
+[commands]
+deny_shells = true
+timeout_secs = 15
+max_output_bytes = 262144
+
+[[commands.allow]]
+program = "ls"
+args = ["-l", "-a", "-1", "-la", "*"]
+max_args = 4
+
+[[commands.allow]]
+program = "cat"
+args = ["*"]
+max_args = 4
+
+[[commands.allow]]
+program = "grep"
+args = ["-n", "-r", "-i", "-F", "-E", "*"]
+deny_args = ["-f*", "--file*"]
+max_args = 8
+
+[[commands.allow]]
+program = "wc"
+args = ["-l", "-c", "-w", "*"]
+
+[files]
+read = ["${WORKSPACE}/**"]
+write = ["${WORKSPACE}/out/**"]
+max_read_bytes = 2097152
+
+[network]
+# Replace with the one API your agent needs.
+allow_domains = ["api.example.com"]
+allow_ports = [443]
+allow_methods = ["GET", "POST"]
+block_private_ips = true
+max_request_bytes = 65536
+max_tunnel_bytes_out = 1048576
+max_response_bytes = 2097152
+detect_secrets = true
+
+[limits]
+actions_per_minute = 30
+max_actions = 500
+max_bytes_out = 4194304
+max_file_write_bytes = 10485760
+deny_threshold = 3
+deny_window_secs = 60
+
+[tripwires]
+protect_paths = ["${WORKSPACE}/.git/hooks/**"]
+canary_paths = ["${HOME}/.aws/credentials", "${WORKSPACE}/.canary/**"]
+halt_on_shell = true
+halt_on_secret = true
+halt_on_budget = true
+
+[env]
+pass = ["PATH", "LANG", "TERM", "TZ"]
+
+[sandbox]
+landlock = true
+restrict_network = true
+seccomp = true
+block_udp = true
+rlimit_cpu_secs = 600
+rlimit_fsize_bytes = 104857600
+rlimit_nofile = 256

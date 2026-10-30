@@ -1,0 +1,17 @@
+[package]
+name = "warden-net"
+description = "Egress guard for agent-warden: allowlisting HTTP/CONNECT proxy and checked HTTP client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+warden-policy = { path = "../warden-policy" }
+ureq.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,99 @@
+# dev.toml: for a coding agent on your own repository.
+#
+# Lets the agent build and test (cargo, git, common text tools) and reach
+# package registries and GitHub over HTTPS. Still no shells, no secrets,
+# no private IPs, no writes outside the workspace and the build caches.
+[meta]
+name = "dev"
+description = "Coding agent: build/test tooling, registries, workspace writes"
+
+[commands]
+timeout_secs = 600
+max_output_bytes = 4194304
+
+[[commands.allow]]
+program = "cargo"
+args = ["build", "test", "check", "clippy", "fmt", "run", "doc", "tree", "metadata", "--*", "-*", "*"]
+deny_args = ["install", "publish", "login", "owner", "yank", "--config*"]
+
+[[commands.allow]]
+program = "rustc"
+args = ["--version", "-V", "-vV"]
+
+[[commands.allow]]
+program = "git"
+args = ["status", "diff", "log", "show", "add", "commit", "branch", "checkout", "switch", "restore", "rev-parse", "ls-files", "blame", "stash", "-*", "--*", "*"]
+# no remotes, no pushes, no config changes, no hooks
+deny_args = ["push", "remote", "config", "fetch", "pull", "clone", "submodule", "-c", "--exec*", "--upload-pack*", "credential*", "filter-branch"]
+
+[[commands.allow]]
+program = "ls"
+args = ["*"]
+
+[[commands.allow]]
+program = "cat"
+args = ["*"]
+
+[[commands.allow]]
+program = "grep"
+args = ["*"]
+deny_args = ["-f*", "--file*"]
+
+[[commands.allow]]
+program = "find"
+args = ["*"]
+deny_args = ["-exec*", "-execdir*", "-ok*", "-okdir*", "-delete", "-fprint*", "-fls"]
+
+[[commands.allow]]
+program = "head"
+args = ["*"]
+
+[[commands.allow]]
+program = "tail"
+args = ["*"]
+
+[[commands.allow]]
+program = "wc"
+args = ["*"]
+
+[[commands.allow]]
+program = "diff"
+args = ["*"]
+
+[files]
+read = ["${WORKSPACE}/**", "${HOME}/.cargo/registry/**", "${HOME}/.rustup/**"]
+write = ["${WORKSPACE}/**", "${HOME}/.cargo/registry/**", "${TMPDIR}/**"]
+
+[network]
+allow_domains = [
+  "crates.io", "index.crates.io", "static.crates.io",
+  "github.com", "api.github.com", "raw.githubusercontent.com", "codeload.github.com",
+  "pypi.org", "files.pythonhosted.org", "registry.npmjs.org",
+]
+allow_ports = [443]
+allow_methods = ["GET", "HEAD"]
+max_request_bytes = 262144
+max_tunnel_bytes_out = 8388608
+
+[limits]
+actions_per_minute = 240
+max_actions = 20000
+max_bytes_out = 67108864
+max_file_write_bytes = 1073741824
+deny_threshold = 15
+deny_window_secs = 120
+
+[tripwires]
+protect_paths = ["${WORKSPACE}/.git/hooks/**", "${WORKSPACE}/.github/workflows/**"]
+
+[env]
+pass = ["PATH", "HOME", "LANG", "LC_ALL", "TERM", "TZ", "USER", "CARGO_HOME", "RUSTUP_HOME"]
+
+[sandbox]
+landlock_extra_read = [
+  "/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc/ld.so.cache", "/etc/ld.so.conf",
+  "/etc/ld.so.conf.d", "/etc/ssl", "/etc/ca-certificates", "/etc/resolv.conf", "/etc/hosts",
+  "/etc/passwd", "/etc/group", "/etc/nsswitch.conf", "/etc/gitconfig", "/etc/localtime",
+  "/dev/urandom", "/dev/null", "/proc/self", "/proc/cpuinfo", "/proc/meminfo", "/sys/devices/system/cpu",
+]
+landlock_extra_write = ["/dev/null", "/dev/tty"]

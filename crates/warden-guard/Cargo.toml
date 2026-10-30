@@ -1,0 +1,34 @@
+[package]
+name = "warden-guard"
+description = "Supervisor, tool-call gateway, sandbox and kill switch for agent-warden"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = ["landlock", "seccomp"]
+## Linux Landlock filesystem + TCP confinement of the agent and of gateway `exec`.
+landlock = ["dep:landlock"]
+## seccomp-bpf blocklist of dangerous syscalls.
+seccomp = ["dep:seccompiler"]
+
+[dependencies]
+warden-policy = { path = "../warden-policy" }
+warden-audit = { path = "../warden-audit" }
+warden-net = { path = "../warden-net" }
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+libc.workspace = true
+thiserror.workspace = true
+signal-hook.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+landlock = { version = "0.4", optional = true }
+seccompiler = { version = "0.5", optional = true }
+
+[dev-dependencies]
+tempfile.workspace = true
